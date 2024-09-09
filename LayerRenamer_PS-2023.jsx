@@ -22,22 +22,24 @@ var baseName = prompt("请输入基础图层名称：", "Layer");
 var startNumber = parseInt(prompt("请输入编号的起始值：", "1"), 10);
 var numberFormat = prompt("请输入编号格式（例如 001，保持编号位数）：", "001");
 
-// 提示输入颜色标签
-var colorLabel = prompt("请输入颜色标签（None, Red, Orange, Yellow, Green, Blue, Violet, Gray）：", "None");
-
-if (isNaN(startNumber) || !baseName || !numberFormat || !colorLabel) {
+if (isNaN(startNumber) || !baseName || !numberFormat) {
     alert("输入无效，请重新运行脚本。");
     throw new Error("Invalid input.");
 }
 
-// 校验颜色标签是否有效
-var validColors = ["None", "Red", "Orange", "Yellow", "Green", "Blue", "Violet", "Gray"];
-if (validColors.indexOf(colorLabel) === -1) {
-    alert("无效的颜色标签。");
-    throw new Error("Invalid color label.");
+// 是否需要修改图层颜色标签
+var changeColor = confirm("是否要修改选中图层的颜色标签？");
+
+// 如果选择修改颜色，提示选择颜色标签
+var colorLabel = null;
+if (changeColor) {
+    colorLabel = prompt(
+        "请输入颜色标签（none, red, orange, yellow, green, blue, violet, gray）：",
+        "none"
+    );
 }
 
-// 批量重命名图层并设置颜色标签
+// 批量重命名图层并修改颜色标签
 renameAndColorLayers(selectedLayers, baseName, startNumber, numberFormat, colorLabel);
 
 // 函数：获取当前所选图层（使用 ActionDescriptor）
@@ -51,6 +53,7 @@ function getSelectedLayers() {
         var targetLayers = desc.getList(stringIDToTypeID('targetLayers'));
         for (var i = 0; i < targetLayers.count; i++) {
             var layerIndex = targetLayers.getReference(i).getIndex();
+            // 因为图层索引是1开始，因此我们使用 getLayerByIndex 的时候要减去 1
             selectedLayers.push(getLayerByIndex(layerIndex + 1)); // 索引修正，确保不会偏移
         }
     } else {
@@ -76,15 +79,64 @@ function getLayerById(id) {
     return doc.layers.getByName(desc.getString(charIDToTypeID("Nm  ")));
 }
 
-// 函数：重命名图层并设置颜色标签
+// 函数：重命名图层并修改颜色标签
 function renameAndColorLayers(layers, baseName, startNumber, numberFormat, colorLabel) {
     for (var i = 0; i < layers.length; i++) {
         var currentNumber = (startNumber + i).toString();
         var formattedNumber = zeroPad(currentNumber, numberFormat.length);
         var newName = baseName + formattedNumber;
         layers[i].name = newName;
-        setLayerColor(layers[i], colorLabel);
+        
+        // 如果用户选择了颜色标签，则设置颜色标签
+        if (colorLabel) {
+            setLayerColor(layers[i], colorLabel);
+        }
     }
+}
+
+// 函数：设置图层颜色标签
+function setLayerColor(layer, color) {
+    var colorCode;
+    switch (color.toLowerCase()) {
+        case "none":
+            colorCode = "None";
+            break;
+        case "red":
+            colorCode = "Rd  "; // 红色
+            break;
+        case "orange":
+            colorCode = "Orng"; // 橙色
+            break;
+        case "yellow":
+            colorCode = "Ylw "; // 黄色
+            break;
+        case "green":
+            colorCode = "Grn "; // 绿色
+            break;
+        case "blue":
+            colorCode = "Bl  "; // 蓝色
+            break;
+        case "violet":
+            colorCode = "Vlt "; // 紫色
+            break;
+        case "gray":
+            colorCode = "Gry "; // 灰色
+            break;
+        default:
+            colorCode = "None";
+    }
+
+    var ref = new ActionReference();
+    ref.putName(charIDToTypeID("Lyr "), layer.name);
+    
+    var desc = new ActionDescriptor();
+    desc.putReference(charIDToTypeID("null"), ref);
+    
+    var colorDesc = new ActionDescriptor();
+    colorDesc.putEnumerated(charIDToTypeID("Clr "), charIDToTypeID("Clr "), charIDToTypeID(colorCode));
+    
+    desc.putObject(charIDToTypeID("T   "), charIDToTypeID("Lyr "), colorDesc);
+    executeAction(charIDToTypeID("setd"), desc, DialogModes.NO);
 }
 
 // 函数：补零
@@ -93,47 +145,4 @@ function zeroPad(num, width) {
         num = '0' + num;
     }
     return num;
-}
-
-// 函数：设置图层颜色标签
-function setLayerColor(layer, colorLabel) {
-    var colorDescriptor = new ActionDescriptor();
-    var colorReference = new ActionReference();
-    colorReference.putIdentifier(charIDToTypeID("Lyr "), layer.id);
-    colorDescriptor.putReference(charIDToTypeID("null"), colorReference);
-
-    var colorEnum;
-    switch (colorLabel) {
-        case "Red":
-            colorEnum = charIDToTypeID("Rd  ");
-            break;
-        case "Orange":
-            colorEnum = charIDToTypeID("Orng");
-            break;
-        case "Yellow":
-            colorEnum = charIDToTypeID("Ylw ");
-            break;
-        case "Green":
-            colorEnum = charIDToTypeID("Grn ");
-            break;
-        case "Blue":
-            colorEnum = charIDToTypeID("Bl  ");
-            break;
-        case "Violet":
-            colorEnum = charIDToTypeID("Vlt ");
-            break;
-        case "Gray":
-            colorEnum = charIDToTypeID("Gry ");
-            break;
-        case "None":
-        default:
-            colorEnum = charIDToTypeID("None");
-            break;
-    }
-
-    var colorSetDescriptor = new ActionDescriptor();
-    colorSetDescriptor.putEnumerated(charIDToTypeID("Clr "), charIDToTypeID("Clr "), colorEnum);
-    colorDescriptor.putObject(charIDToTypeID("T   "), charIDToTypeID("Lyr "), colorSetDescriptor);
-
-    executeAction(charIDToTypeID("setd"), colorDescriptor, DialogModes.NO);
 }
