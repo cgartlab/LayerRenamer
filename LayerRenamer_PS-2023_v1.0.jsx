@@ -22,13 +22,23 @@ var baseName = prompt("请输入基础图层名称：", "Layer");
 var startNumber = parseInt(prompt("请输入编号的起始值：", "1"), 10);
 var numberFormat = prompt("请输入编号格式（例如 001，保持编号位数）：", "001");
 
-if (isNaN(startNumber) || !baseName || !numberFormat) {
+// 提示输入颜色标签
+var colorLabel = prompt("请输入颜色标签（None, Red, Orange, Yellow, Green, Blue, Violet, Gray）：", "None");
+
+if (isNaN(startNumber) || !baseName || !numberFormat || !colorLabel) {
     alert("输入无效，请重新运行脚本。");
     throw new Error("Invalid input.");
 }
 
-// 批量重命名图层
-renameLayers(selectedLayers, baseName, startNumber, numberFormat);
+// 校验颜色标签是否有效
+var validColors = ["None", "Red", "Orange", "Yellow", "Green", "Blue", "Violet", "Gray"];
+if (validColors.indexOf(colorLabel) === -1) {
+    alert("无效的颜色标签。");
+    throw new Error("Invalid color label.");
+}
+
+// 批量重命名图层并设置颜色标签
+renameAndColorLayers(selectedLayers, baseName, startNumber, numberFormat, colorLabel);
 
 // 函数：获取当前所选图层（使用 ActionDescriptor）
 function getSelectedLayers() {
@@ -41,7 +51,6 @@ function getSelectedLayers() {
         var targetLayers = desc.getList(stringIDToTypeID('targetLayers'));
         for (var i = 0; i < targetLayers.count; i++) {
             var layerIndex = targetLayers.getReference(i).getIndex();
-            // 因为图层索引是1开始，因此我们使用 getLayerByIndex 的时候要减去 1
             selectedLayers.push(getLayerByIndex(layerIndex + 1)); // 索引修正，确保不会偏移
         }
     } else {
@@ -67,13 +76,14 @@ function getLayerById(id) {
     return doc.layers.getByName(desc.getString(charIDToTypeID("Nm  ")));
 }
 
-// 函数：重命名图层
-function renameLayers(layers, baseName, startNumber, numberFormat) {
+// 函数：重命名图层并设置颜色标签
+function renameAndColorLayers(layers, baseName, startNumber, numberFormat, colorLabel) {
     for (var i = 0; i < layers.length; i++) {
         var currentNumber = (startNumber + i).toString();
         var formattedNumber = zeroPad(currentNumber, numberFormat.length);
         var newName = baseName + formattedNumber;
         layers[i].name = newName;
+        setLayerColor(layers[i], colorLabel);
     }
 }
 
@@ -83,4 +93,47 @@ function zeroPad(num, width) {
         num = '0' + num;
     }
     return num;
+}
+
+// 函数：设置图层颜色标签
+function setLayerColor(layer, colorLabel) {
+    var colorDescriptor = new ActionDescriptor();
+    var colorReference = new ActionReference();
+    colorReference.putIdentifier(charIDToTypeID("Lyr "), layer.id);
+    colorDescriptor.putReference(charIDToTypeID("null"), colorReference);
+
+    var colorEnum;
+    switch (colorLabel) {
+        case "Red":
+            colorEnum = charIDToTypeID("Rd  ");
+            break;
+        case "Orange":
+            colorEnum = charIDToTypeID("Orng");
+            break;
+        case "Yellow":
+            colorEnum = charIDToTypeID("Ylw ");
+            break;
+        case "Green":
+            colorEnum = charIDToTypeID("Grn ");
+            break;
+        case "Blue":
+            colorEnum = charIDToTypeID("Bl  ");
+            break;
+        case "Violet":
+            colorEnum = charIDToTypeID("Vlt ");
+            break;
+        case "Gray":
+            colorEnum = charIDToTypeID("Gry ");
+            break;
+        case "None":
+        default:
+            colorEnum = charIDToTypeID("None");
+            break;
+    }
+
+    var colorSetDescriptor = new ActionDescriptor();
+    colorSetDescriptor.putEnumerated(charIDToTypeID("Clr "), charIDToTypeID("Clr "), colorEnum);
+    colorDescriptor.putObject(charIDToTypeID("T   "), charIDToTypeID("Lyr "), colorSetDescriptor);
+
+    executeAction(charIDToTypeID("setd"), colorDescriptor, DialogModes.NO);
 }
