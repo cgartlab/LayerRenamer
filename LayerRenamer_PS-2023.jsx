@@ -27,17 +27,8 @@ if (isNaN(startNumber) || !baseName || !numberFormat) {
     throw new Error("Invalid input.");
 }
 
-// 是否需要修改图层颜色标签
-var changeColor = confirm("是否要修改选中图层的颜色标签？");
-
-// 如果选择修改颜色，提示选择颜色标签
-var colorLabel = null;
-if (changeColor) {
-    colorLabel = prompt(
-        "请输入颜色标签（none, red, orange, yellow, green, blue, violet, gray）：",
-        "none"
-    );
-}
+// 显示颜色选择界面
+var colorLabel = showColorCheckboxDialog();
 
 // 批量重命名图层并修改颜色标签
 renameAndColorLayers(selectedLayers, baseName, startNumber, numberFormat, colorLabel);
@@ -87,11 +78,46 @@ function renameAndColorLayers(layers, baseName, startNumber, numberFormat, color
         var newName = baseName + formattedNumber;
         layers[i].name = newName;
         
-        // 如果用户选择了颜色标签，则设置颜色标签
+        // 如果选择了颜色标签，则设置颜色标签
         if (colorLabel) {
             setLayerColor(layers[i], colorLabel);
         }
     }
+}
+
+// 函数：显示颜色选择界面
+function showColorCheckboxDialog() {
+    var dialog = new Window("dialog", "选择图层颜色标签");
+    dialog.orientation = "column";
+
+    var noneCheckbox = dialog.add("checkbox", undefined, "无颜色标签");
+    var redCheckbox = dialog.add("checkbox", undefined, "红色");
+    var orangeCheckbox = dialog.add("checkbox", undefined, "橙色");
+    var yellowCheckbox = dialog.add("checkbox", undefined, "黄色");
+    var greenCheckbox = dialog.add("checkbox", undefined, "绿色");
+    var blueCheckbox = dialog.add("checkbox", undefined, "蓝色");
+    var violetCheckbox = dialog.add("checkbox", undefined, "紫色");
+    var grayCheckbox = dialog.add("checkbox", undefined, "灰色");
+
+    noneCheckbox.value = true;
+
+    // 添加一个确认按钮
+    var okButton = dialog.add("button", undefined, "确认");
+    okButton.onClick = function () {
+        dialog.close();
+    };
+
+    dialog.show();
+
+    // 返回选择的颜色标签
+    if (redCheckbox.value) return "red";
+    if (orangeCheckbox.value) return "orange";
+    if (yellowCheckbox.value) return "yellow";
+    if (greenCheckbox.value) return "green";
+    if (blueCheckbox.value) return "blue";
+    if (violetCheckbox.value) return "violet";
+    if (grayCheckbox.value) return "gray";
+    return "none";  // 默认无颜色标签
 }
 
 // 函数：设置图层颜色标签
