@@ -1,39 +1,64 @@
 #target photoshop
-app.bringToFront();
 
-// 检查是否有打开的文档
-if (app.documents.length === 0) {
-    alert("没有打开的文档。");
-    throw new Error("No document open.");
+// 主要函数：启动脚本
+function main() {
+    // 创建主对话框
+    var dlg = new Window("dialog", "LayerRenamer-dev1.1");
+
+    // 基础图层名称输入
+    dlg.add("statictext", undefined, "基础图层名称：");
+    var baseNameInput = dlg.add("edittext", undefined, "Layer");
+    baseNameInput.characters = 20;
+
+    // 编号起始值输入
+    dlg.add("statictext", undefined, "编号起始值：");
+    var startNumberInput = dlg.add("edittext", undefined, "1");
+    startNumberInput.characters = 5;
+
+    // 编号格式输入
+    dlg.add("statictext", undefined, "编号格式（例如 001）：");
+    var numberFormatInput = dlg.add("edittext", undefined, "001");
+    numberFormatInput.characters = 10;
+
+    // 颜色标签选择
+    dlg.add("statictext", undefined, "选择颜色标签：");
+    var colorGroup = dlg.add("group");
+    var colorOptions = ["无颜色标签", "红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "灰色"];
+    var colorDropdown = colorGroup.add("dropdownlist", undefined, colorOptions);
+    colorDropdown.selection = 0;
+
+    // 确认按钮
+    var okButton = dlg.add("button", undefined, "确认");
+    okButton.onClick = function () {
+        var baseName = baseNameInput.text;
+        var startNumber = parseInt(startNumberInput.text, 10);
+        var numberFormat = numberFormatInput.text;
+        var colorLabel = colorDropdown.selection.text.toLowerCase();
+        
+        // 验证输入
+        if (isNaN(startNumber) || !baseName || !numberFormat) {
+            alert("输入无效，请重新输入！");
+            return;
+        }
+
+        // 关闭对话框
+        dlg.close();
+
+        // 执行重命名和颜色设置
+        renameAndColorLayers(getSelectedLayers(), baseName, startNumber, numberFormat, colorLabel);
+    };
+
+    // 监听按键事件以便按下回车键时触发确认按钮
+    dlg.addEventListener("keydown", function(event) {
+        if (event.keyName === "Enter") {
+            okButton.notify(); // 手动触发确认按钮点击事件
+        }
+    });
+
+    dlg.show();
 }
 
-// 获取当前活动文档
-var doc = app.activeDocument;
-
-// 检查是否有选中的图层
-var selectedLayers = getSelectedLayers();
-if (selectedLayers.length === 0) {
-    alert("没有选中的图层。");
-    throw new Error("No layers selected.");
-}
-
-// 提示输入自定义名称和编号格式
-var baseName = prompt("请输入基础图层名称：", "Layer");
-var startNumber = parseInt(prompt("请输入编号的起始值：", "1"), 10);
-var numberFormat = prompt("请输入编号格式（例如 001，保持编号位数）：", "001");
-
-if (isNaN(startNumber) || !baseName || !numberFormat) {
-    alert("输入无效，请重新运行脚本。");
-    throw new Error("Invalid input.");
-}
-
-// 显示颜色选择界面
-var colorLabel = showColorCheckboxDialog();
-
-// 批量重命名图层并修改颜色标签
-renameAndColorLayers(selectedLayers, baseName, startNumber, numberFormat, colorLabel);
-
-// 函数：获取当前所选图层（使用 ActionDescriptor）
+// 函数：获取当前所选图层（包括图层组内的图层）
 function getSelectedLayers() {
     var selectedLayers = [];
     var ref = new ActionReference();
@@ -44,13 +69,29 @@ function getSelectedLayers() {
         var targetLayers = desc.getList(stringIDToTypeID('targetLayers'));
         for (var i = 0; i < targetLayers.count; i++) {
             var layerIndex = targetLayers.getReference(i).getIndex();
-            // 因为图层索引是1开始，因此我们使用 getLayerByIndex 的时候要减去 1
-            selectedLayers.push(getLayerByIndex(layerIndex + 1)); // 索引修正，确保不会偏移
+            var layer = getLayerByIndex(layerIndex + 1); // 索引修正
+            if (layer) {
+                selectedLayers = selectedLayers.concat(getAllLayers(layer));
+            }
         }
     } else {
-        selectedLayers.push(doc.activeLayer);
+        var activeLayer = app.activeDocument.activeLayer;
+        selectedLayers = getAllLayers(activeLayer);
     }
     return selectedLayers;
+}
+
+// 函数：获取图层组内所有图层（递归）
+function getAllLayers(layer) {
+    var layers = [];
+    if (layer.typename === "ArtLayer") {
+        layers.push(layer);
+    } else if (layer.typename === "LayerSet") {
+        for (var i = 0; i < layer.layers.length; i++) {
+            layers = layers.concat(getAllLayers(layer.layers[i]));
+        }
+    }
+    return layers;
 }
 
 // 函数：通过索引获取图层
@@ -67,7 +108,7 @@ function getLayerById(id) {
     var ref = new ActionReference();
     ref.putIdentifier(charIDToTypeID("Lyr "), id);
     var desc = executeActionGet(ref);
-    return doc.layers.getByName(desc.getString(charIDToTypeID("Nm  ")));
+    return app.activeDocument.layers.getByName(desc.getString(charIDToTypeID("Nm  ")));
 }
 
 // 函数：重命名图层并修改颜色标签
@@ -78,75 +119,37 @@ function renameAndColorLayers(layers, baseName, startNumber, numberFormat, color
         var newName = baseName + formattedNumber;
         layers[i].name = newName;
         
-        // 如果选择了颜色标签，则设置颜色标签
-        if (colorLabel) {
+        // 设置颜色标签
+        if (colorLabel !== "无颜色标签") {
             setLayerColor(layers[i], colorLabel);
         }
     }
-}
-
-// 函数：显示颜色选择界面
-function showColorCheckboxDialog() {
-    var dialog = new Window("dialog", "选择图层颜色标签");
-    dialog.orientation = "column";
-
-    var noneCheckbox = dialog.add("checkbox", undefined, "无颜色标签");
-    var redCheckbox = dialog.add("checkbox", undefined, "红色");
-    var orangeCheckbox = dialog.add("checkbox", undefined, "橙色");
-    var yellowCheckbox = dialog.add("checkbox", undefined, "黄色");
-    var greenCheckbox = dialog.add("checkbox", undefined, "绿色");
-    var blueCheckbox = dialog.add("checkbox", undefined, "蓝色");
-    var violetCheckbox = dialog.add("checkbox", undefined, "紫色");
-    var grayCheckbox = dialog.add("checkbox", undefined, "灰色");
-
-    noneCheckbox.value = true;
-
-    // 添加一个确认按钮
-    var okButton = dialog.add("button", undefined, "确认");
-    okButton.onClick = function () {
-        dialog.close();
-    };
-
-    dialog.show();
-
-    // 返回选择的颜色标签
-    if (redCheckbox.value) return "red";
-    if (orangeCheckbox.value) return "orange";
-    if (yellowCheckbox.value) return "yellow";
-    if (greenCheckbox.value) return "green";
-    if (blueCheckbox.value) return "blue";
-    if (violetCheckbox.value) return "violet";
-    if (grayCheckbox.value) return "gray";
-    return "none";  // 默认无颜色标签
 }
 
 // 函数：设置图层颜色标签
 function setLayerColor(layer, color) {
     var colorCode;
     switch (color.toLowerCase()) {
-        case "none":
-            colorCode = "None";
+        case "红色":
+            colorCode = "Rd  ";
             break;
-        case "red":
-            colorCode = "Rd  "; // 红色
+        case "橙色":
+            colorCode = "Orng";
             break;
-        case "orange":
-            colorCode = "Orng"; // 橙色
+        case "黄色":
+            colorCode = "Ylw ";
             break;
-        case "yellow":
-            colorCode = "Ylw "; // 黄色
+        case "绿色":
+            colorCode = "Grn ";
             break;
-        case "green":
-            colorCode = "Grn "; // 绿色
+        case "蓝色":
+            colorCode = "Bl  ";
             break;
-        case "blue":
-            colorCode = "Bl  "; // 蓝色
+        case "紫色":
+            colorCode = "Vlt ";
             break;
-        case "violet":
-            colorCode = "Vlt "; // 紫色
-            break;
-        case "gray":
-            colorCode = "Gry "; // 灰色
+        case "灰色":
+            colorCode = "Gry ";
             break;
         default:
             colorCode = "None";
@@ -172,3 +175,6 @@ function zeroPad(num, width) {
     }
     return num;
 }
+
+// 启动主函数
+main();
