@@ -1,97 +1,287 @@
 // 脚本功能：批量重命名图层并设置颜色标签
-// 版本：1.1
+// 版本：1.3
 // 作者：cgart
-// 日期：2021.10.29
+// 日期：2021.10.29（2026.02 质量增强：dry-run + 冲突策略）
 // 说明：
-// 1. 脚本会自动获取当前所选图层（包括图层组内的图层），并对其进行重命名，格式为“基础图层名称”+“编号”（格式由“编号格式”指定，如“001”）。
-// 2. 脚本会自动设置颜色标签，颜色标签由“颜色标签”指定，可选“无颜色标签”、“红色”、“橙色”、“黄色”、“绿色”、“蓝色”、“紫色”、“灰色”。
-// 3. 脚本会自动关闭对话框。
-// 4. 脚本支持图层组。
+// 1. 支持批量重命名与颜色标签设置。
+// 2. 支持 dry-run（仅预览，不写入）。
+// 3. 支持冲突策略：跳过 / 覆盖 / 自动追加后缀。
 
-#target photoshop  
+#target photoshop
+
+var MAX_LAYER_NAME_LENGTH = 255;
+var MAX_START_NUMBER = 999999;
+var PREVIEW_MAX_LINES = 50;
+
+var CONFLICT_SKIP = "跳过";
+var CONFLICT_OVERWRITE = "覆盖";
+var CONFLICT_SUFFIX = "自动追加后缀";
 
 // 主要函数：启动脚本
 function main() {
-    // 创建主对话框
-    var dlg = new Window("dialog", "LayerRenamer-dev1.1");
+    var dlg = new Window("dialog", "LayerRenamer-dev1.3");
 
-    // 基础图层名称输入
     dlg.add("statictext", undefined, "基础图层名称：");
     var baseNameInput = dlg.add("edittext", undefined, "Layer");
     baseNameInput.characters = 20;
 
-    // 编号起始值输入
     dlg.add("statictext", undefined, "编号起始值：");
     var startNumberInput = dlg.add("edittext", undefined, "1");
     startNumberInput.characters = 5;
 
-    // 编号格式输入
     dlg.add("statictext", undefined, "编号格式（例如 001）：");
     var numberFormatInput = dlg.add("edittext", undefined, "001");
     numberFormatInput.characters = 10;
 
-    // 颜色标签选择
     dlg.add("statictext", undefined, "选择颜色标签：");
-    var colorGroup = dlg.add("group");
     var colorOptions = ["无颜色标签", "红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "灰色"];
-    var colorDropdown = colorGroup.add("dropdownlist", undefined, colorOptions);
+    var colorDropdown = dlg.add("dropdownlist", undefined, colorOptions);
     colorDropdown.selection = 0;
 
-    // 确认按钮
-    var okButton = dlg.add("button", undefined, "确认");
+    dlg.add("statictext", undefined, "命名冲突策略：");
+    var conflictOptions = [CONFLICT_SKIP, CONFLICT_OVERWRITE, CONFLICT_SUFFIX];
+    var conflictDropdown = dlg.add("dropdownlist", undefined, conflictOptions);
+    conflictDropdown.selection = 0;
+
+    var dryRunCheckbox = dlg.add("checkbox", undefined, "Dry-run 预览（仅查看，不写入）");
+    dryRunCheckbox.value = true;
+
+    var buttonGroup = dlg.add("group");
+    buttonGroup.orientation = "row";
+    var okButton = buttonGroup.add("button", undefined, "确认");
+    buttonGroup.add("button", undefined, "取消", { name: "cancel" });
+
     okButton.onClick = function () {
-        var baseName = baseNameInput.text;
+        var baseName = sanitizeBaseName(baseNameInput.text);
         var startNumber = parseInt(startNumberInput.text, 10);
         var numberFormat = numberFormatInput.text;
-        var colorLabel = colorDropdown.selection.text.toLowerCase();
-        
-        // 验证输入
-        if (isNaN(startNumber) || !baseName || !numberFormat) {
-            alert("输入无效，请重新输入！");
+        var colorLabel = colorDropdown.selection ? colorDropdown.selection.text : "无颜色标签";
+        var conflictPolicy = conflictDropdown.selection ? conflictDropdown.selection.text : CONFLICT_SKIP;
+        var dryRun = dryRunCheckbox.value;
+
+        if (!isValidInput(baseName, startNumber, numberFormat)) {
             return;
         }
 
-        // 关闭对话框
-        dlg.close();
+        var selectedLayers = getSelectedLayers();
+        if (!selectedLayers || selectedLayers.length === 0) {
+            alert("未检测到可重命名图层，请先选择图层。");
+            return;
+        }
 
-        // 执行重命名和颜色设置
-        renameAndColorLayers(getSelectedLayers(), baseName, startNumber, numberFormat, colorLabel);
+        var plan = buildRenamePlan(selectedLayers, baseName, startNumber, numberFormat, conflictPolicy);
+
+        // dry-run 直接预览并退出
+        if (dryRun) {
+            showPlanPreview(plan, true);
+            return;
+        }
+
+        dlg.close();
+        executeRename(selectedLayers, plan, colorLabel);
+        showPlanPreview(plan, false);
     };
 
-    // 监听按键事件以便按下回车键时触发确认按钮
-    dlg.addEventListener("keydown", function(event) {
+    dlg.addEventListener("keydown", function (event) {
         if (event.keyName === "Enter") {
-            okButton.notify(); // 手动触发确认按钮点击事件
+            okButton.notify();
         }
     });
 
     dlg.show();
 }
 
-// 函数：获取当前所选图层（包括图层组内的图层）
+function executeRename(layers, plan, colorLabel) {
+    try {
+        for (var i = 0; i < layers.length; i++) {
+            if (plan[i].action === "skip") {
+                continue;
+            }
+            layers[i].name = plan[i].finalName;
+            if (colorLabel !== "无颜色标签") {
+                setLayerColor(layers[i], colorLabel);
+            }
+        }
+    } catch (e) {
+        alert("执行失败：" + e.message);
+    }
+}
+
+function sanitizeBaseName(input) {
+    var name = (input || "").replace(/\s+/g, " ").replace(/[\r\n\t]/g, "").replace(/^\s+|\s+$/g, "");
+    if (name.length > MAX_LAYER_NAME_LENGTH) {
+        name = name.substring(0, MAX_LAYER_NAME_LENGTH);
+    }
+    return name;
+}
+
+function isValidInput(baseName, startNumber, numberFormat) {
+    if (!baseName) {
+        alert("基础图层名称不能为空。");
+        return false;
+    }
+    if (isNaN(startNumber) || startNumber < 0 || startNumber > MAX_START_NUMBER) {
+        alert("编号起始值必须是 0 到 " + MAX_START_NUMBER + " 之间的整数。");
+        return false;
+    }
+    if (!/^0+$/.test(numberFormat) || numberFormat.length > 10) {
+        alert("编号格式仅支持连续 0（例如 001），且长度不超过 10。");
+        return false;
+    }
+    if (baseName.length + numberFormat.length > MAX_LAYER_NAME_LENGTH) {
+        alert("名称过长，请缩短基础图层名称或编号格式。\n当前最大允许长度为 " + MAX_LAYER_NAME_LENGTH + "。");
+        return false;
+    }
+    return true;
+}
+
+function buildRenamePlan(layers, baseName, startNumber, numberFormat, conflictPolicy) {
+    var existingNames = collectAllArtLayerNames(app.activeDocument.layers);
+    var selectedNameMap = {};
+    var i;
+
+    for (i = 0; i < layers.length; i++) {
+        selectedNameMap[layers[i].name] = true;
+    }
+
+    var plan = [];
+    for (i = 0; i < layers.length; i++) {
+        var currentNumber = (startNumber + i).toString();
+        var formattedNumber = zeroPad(currentNumber, numberFormat.length);
+        var targetName = truncateName(baseName + formattedNumber);
+        var finalName = targetName;
+        var action = "rename";
+        var note = "";
+
+        var hasConflict = isNameConflict(targetName, layers[i].name, existingNames);
+
+        if (hasConflict) {
+            if (conflictPolicy === CONFLICT_SKIP) {
+                action = "skip";
+                note = "目标名称已存在，按策略跳过";
+            } else if (conflictPolicy === CONFLICT_SUFFIX) {
+                finalName = generateUniqueName(targetName, existingNames);
+                note = "目标名称冲突，自动追加后缀";
+            } else {
+                note = "目标名称已存在，按策略覆盖";
+            }
+        }
+
+        if (action !== "skip") {
+            existingNames[finalName] = true;
+            if (selectedNameMap[layers[i].name]) {
+                delete existingNames[layers[i].name];
+            }
+        }
+
+        plan.push({
+            oldName: layers[i].name,
+            targetName: targetName,
+            finalName: finalName,
+            action: action,
+            note: note
+        });
+    }
+
+    return plan;
+}
+
+function isNameConflict(candidateName, currentName, existingNames) {
+    if (candidateName === currentName) {
+        return false;
+    }
+    return !!existingNames[candidateName];
+}
+
+function generateUniqueName(baseName, existingNames) {
+    var suffix = 1;
+    var candidate = baseName;
+
+    while (existingNames[candidate]) {
+        var appendix = "_" + suffix;
+        var headMaxLen = MAX_LAYER_NAME_LENGTH - appendix.length;
+        if (headMaxLen < 1) {
+            headMaxLen = 1;
+        }
+        candidate = truncateName(baseName.substring(0, headMaxLen) + appendix);
+        suffix++;
+    }
+
+    return candidate;
+}
+
+function truncateName(name) {
+    if (name.length > MAX_LAYER_NAME_LENGTH) {
+        return name.substring(0, MAX_LAYER_NAME_LENGTH);
+    }
+    return name;
+}
+
+function showPlanPreview(plan, dryRun) {
+    var renamed = 0;
+    var skipped = 0;
+    var lines = [];
+
+    for (var i = 0; i < plan.length; i++) {
+        if (plan[i].action === "skip") {
+            skipped++;
+            lines.push("[跳过] " + plan[i].oldName + " -> " + plan[i].targetName + "（" + plan[i].note + "）");
+        } else {
+            renamed++;
+            lines.push("[重命名] " + plan[i].oldName + " -> " + plan[i].finalName + (plan[i].note ? "（" + plan[i].note + "）" : ""));
+        }
+    }
+
+    var header = dryRun ? "Dry-run 预览（未写入）" : "执行完成";
+    var summary = header + "\n总计: " + plan.length + "，重命名: " + renamed + "，跳过: " + skipped + "\n\n";
+
+    if (lines.length > PREVIEW_MAX_LINES) {
+        lines = lines.slice(0, PREVIEW_MAX_LINES);
+        lines.push("... 其余条目已省略");
+    }
+
+    alert(summary + lines.join("\n"));
+}
+
+function collectAllArtLayerNames(layerCollection) {
+    var names = {};
+    collectNamesRecursively(layerCollection, names);
+    return names;
+}
+
+function collectNamesRecursively(layerCollection, names) {
+    for (var i = 0; i < layerCollection.length; i++) {
+        var layer = layerCollection[i];
+        if (layer.typename === "ArtLayer") {
+            names[layer.name] = true;
+        } else if (layer.typename === "LayerSet") {
+            collectNamesRecursively(layer.layers, names);
+        }
+    }
+}
+
+// 获取当前所选图层（包括图层组内图层）
 function getSelectedLayers() {
     var selectedLayers = [];
     var ref = new ActionReference();
     ref.putEnumerated(charIDToTypeID("Dcmn"), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
     var desc = executeActionGet(ref);
-    
-    if (desc.hasKey(stringIDToTypeID('targetLayers'))) {
-        var targetLayers = desc.getList(stringIDToTypeID('targetLayers'));
+
+    if (desc.hasKey(stringIDToTypeID("targetLayers"))) {
+        var targetLayers = desc.getList(stringIDToTypeID("targetLayers"));
         for (var i = 0; i < targetLayers.count; i++) {
             var layerIndex = targetLayers.getReference(i).getIndex();
-            var layer = getLayerByIndex(layerIndex + 1); // 索引修正
+            var layer = getLayerByIndex(layerIndex + 1);
             if (layer) {
                 selectedLayers = selectedLayers.concat(getAllLayers(layer));
             }
         }
     } else {
-        var activeLayer = app.activeDocument.activeLayer;
-        selectedLayers = getAllLayers(activeLayer);
+        selectedLayers = getAllLayers(app.activeDocument.activeLayer);
     }
     return selectedLayers;
 }
 
-// 函数：获取图层组内所有图层（递归）
 function getAllLayers(layer) {
     var layers = [];
     if (layer.typename === "ArtLayer") {
@@ -104,7 +294,6 @@ function getAllLayers(layer) {
     return layers;
 }
 
-// 函数：通过索引获取图层
 function getLayerByIndex(index) {
     var ref = new ActionReference();
     ref.putIndex(charIDToTypeID("Lyr "), index);
@@ -113,7 +302,6 @@ function getLayerByIndex(index) {
     return getLayerById(layerID);
 }
 
-// 函数：通过ID获取图层
 function getLayerById(id) {
     var ref = new ActionReference();
     ref.putIdentifier(charIDToTypeID("Lyr "), id);
@@ -121,70 +309,41 @@ function getLayerById(id) {
     return app.activeDocument.layers.getByName(desc.getString(charIDToTypeID("Nm  ")));
 }
 
-// 函数：重命名图层并修改颜色标签
-function renameAndColorLayers(layers, baseName, startNumber, numberFormat, colorLabel) {
-    for (var i = 0; i < layers.length; i++) {
-        var currentNumber = (startNumber + i).toString();
-        var formattedNumber = zeroPad(currentNumber, numberFormat.length);
-        var newName = baseName + formattedNumber;
-        layers[i].name = newName;
-        
-        // 设置颜色标签
-        if (colorLabel !== "无颜色标签") {
-            setLayerColor(layers[i], colorLabel);
-        }
-    }
-}
-
-// 函数：设置图层颜色标签
 function setLayerColor(layer, color) {
     var colorCode;
     switch (color.toLowerCase()) {
-        case "红色":
-            colorCode = "Rd  ";
-            break;
-        case "橙色":
-            colorCode = "Orng";
-            break;
-        case "黄色":
-            colorCode = "Ylw ";
-            break;
-        case "绿色":
-            colorCode = "Grn ";
-            break;
-        case "蓝色":
-            colorCode = "Bl  ";
-            break;
-        case "紫色":
-            colorCode = "Vlt ";
-            break;
-        case "灰色":
-            colorCode = "Gry ";
-            break;
-        default:
-            colorCode = "None";
+        case "红色": colorCode = "Rd  "; break;
+        case "橙色": colorCode = "Orng"; break;
+        case "黄色": colorCode = "Ylw "; break;
+        case "绿色": colorCode = "Grn "; break;
+        case "蓝色": colorCode = "Bl  "; break;
+        case "紫色": colorCode = "Vlt "; break;
+        case "灰色": colorCode = "Gry "; break;
+        default: colorCode = "None";
     }
 
     var ref = new ActionReference();
-    ref.putName(charIDToTypeID("Lyr "), layer.name);
-    
+    if (layer.id) {
+        ref.putIdentifier(charIDToTypeID("Lyr "), layer.id);
+    } else {
+        ref.putName(charIDToTypeID("Lyr "), layer.name);
+    }
+
     var desc = new ActionDescriptor();
     desc.putReference(charIDToTypeID("null"), ref);
-    
+
     var colorDesc = new ActionDescriptor();
     colorDesc.putEnumerated(charIDToTypeID("Clr "), charIDToTypeID("Clr "), charIDToTypeID(colorCode));
-    
+
     desc.putObject(charIDToTypeID("T   "), charIDToTypeID("Lyr "), colorDesc);
     executeAction(charIDToTypeID("setd"), desc, DialogModes.NO);
 }
 
-// 函数：补零
 function zeroPad(num, width) {
     while (num.length < width) {
-        num = '0' + num;
+        num = "0" + num;
     }
     return num;
 }
 
-// 启动主函数
 main();
