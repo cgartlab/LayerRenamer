@@ -1,7 +1,7 @@
 // 脚本功能：批量重命名图层并设置颜色标签
-// 版本：1.3
+// 版本：1.4
 // 作者：cgart
-// 日期：2021.10.29（2026.02 质量增强：dry-run + 冲突策略）
+// 日期：2026.05
 // 说明：
 // 1. 支持批量重命名与颜色标签设置。
 // 2. 支持 dry-run（仅预览，不写入）。
@@ -9,260 +9,11 @@
 
 #target photoshop
 
-var MAX_LAYER_NAME_LENGTH = 255;
-var MAX_START_NUMBER = 999999;
-var PREVIEW_MAX_LINES = 50;
+#include "LayerRenamerCore.jsx"
 
-var CONFLICT_SKIP = "跳过";
-var CONFLICT_OVERWRITE = "覆盖";
-var CONFLICT_SUFFIX = "自动追加后缀";
+function collectLayerInfo(doc) {
+    var selectedIds = {};
 
-// 主要函数：启动脚本
-function main() {
-    var dlg = new Window("dialog", "LayerRenamer-dev1.3");
-
-    dlg.add("statictext", undefined, "基础图层名称：");
-    var baseNameInput = dlg.add("edittext", undefined, "Layer");
-    baseNameInput.characters = 20;
-
-    dlg.add("statictext", undefined, "编号起始值：");
-    var startNumberInput = dlg.add("edittext", undefined, "1");
-    startNumberInput.characters = 5;
-
-    dlg.add("statictext", undefined, "编号格式（例如 001）：");
-    var numberFormatInput = dlg.add("edittext", undefined, "001");
-    numberFormatInput.characters = 10;
-
-    dlg.add("statictext", undefined, "选择颜色标签：");
-    var colorOptions = ["无颜色标签", "红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "灰色"];
-    var colorDropdown = dlg.add("dropdownlist", undefined, colorOptions);
-    colorDropdown.selection = 0;
-
-    dlg.add("statictext", undefined, "命名冲突策略：");
-    var conflictOptions = [CONFLICT_SKIP, CONFLICT_OVERWRITE, CONFLICT_SUFFIX];
-    var conflictDropdown = dlg.add("dropdownlist", undefined, conflictOptions);
-    conflictDropdown.selection = 0;
-
-    var dryRunCheckbox = dlg.add("checkbox", undefined, "Dry-run 预览（仅查看，不写入）");
-    dryRunCheckbox.value = true;
-
-    var buttonGroup = dlg.add("group");
-    buttonGroup.orientation = "row";
-    var okButton = buttonGroup.add("button", undefined, "确认");
-    buttonGroup.add("button", undefined, "取消", { name: "cancel" });
-
-    okButton.onClick = function () {
-        var baseName = sanitizeBaseName(baseNameInput.text);
-        var startNumber = parseInt(startNumberInput.text, 10);
-        var numberFormat = numberFormatInput.text;
-        var colorLabel = colorDropdown.selection ? colorDropdown.selection.text : "无颜色标签";
-        var conflictPolicy = conflictDropdown.selection ? conflictDropdown.selection.text : CONFLICT_SKIP;
-        var dryRun = dryRunCheckbox.value;
-
-        if (!isValidInput(baseName, startNumber, numberFormat)) {
-            return;
-        }
-
-        var selectedLayers = getSelectedLayers();
-        if (!selectedLayers || selectedLayers.length === 0) {
-            alert("未检测到可重命名图层，请先选择图层。");
-            return;
-        }
-
-        var plan = buildRenamePlan(selectedLayers, baseName, startNumber, numberFormat, conflictPolicy);
-
-        // dry-run 直接预览并退出
-        if (dryRun) {
-            showPlanPreview(plan, true);
-            return;
-        }
-
-        dlg.close();
-        executeRename(selectedLayers, plan, colorLabel);
-        showPlanPreview(plan, false);
-    };
-
-    dlg.addEventListener("keydown", function (event) {
-        if (event.keyName === "Enter") {
-            okButton.notify();
-        }
-    });
-
-    dlg.show();
-}
-
-function executeRename(layers, plan, colorLabel) {
-    try {
-        for (var i = 0; i < layers.length; i++) {
-            if (plan[i].action === "skip") {
-                continue;
-            }
-            layers[i].name = plan[i].finalName;
-            if (colorLabel !== "无颜色标签") {
-                setLayerColor(layers[i], colorLabel);
-            }
-        }
-    } catch (e) {
-        alert("执行失败：" + e.message);
-    }
-}
-
-function sanitizeBaseName(input) {
-    var name = (input || "").replace(/\s+/g, " ").replace(/[\r\n\t]/g, "").replace(/^\s+|\s+$/g, "");
-    if (name.length > MAX_LAYER_NAME_LENGTH) {
-        name = name.substring(0, MAX_LAYER_NAME_LENGTH);
-    }
-    return name;
-}
-
-function isValidInput(baseName, startNumber, numberFormat) {
-    if (!baseName) {
-        alert("基础图层名称不能为空。");
-        return false;
-    }
-    if (isNaN(startNumber) || startNumber < 0 || startNumber > MAX_START_NUMBER) {
-        alert("编号起始值必须是 0 到 " + MAX_START_NUMBER + " 之间的整数。");
-        return false;
-    }
-    if (!/^0+$/.test(numberFormat) || numberFormat.length > 10) {
-        alert("编号格式仅支持连续 0（例如 001），且长度不超过 10。");
-        return false;
-    }
-    if (baseName.length + numberFormat.length > MAX_LAYER_NAME_LENGTH) {
-        alert("名称过长，请缩短基础图层名称或编号格式。\n当前最大允许长度为 " + MAX_LAYER_NAME_LENGTH + "。");
-        return false;
-    }
-    return true;
-}
-
-function buildRenamePlan(layers, baseName, startNumber, numberFormat, conflictPolicy) {
-    var existingNames = collectAllArtLayerNames(app.activeDocument.layers);
-    var selectedNameMap = {};
-    var i;
-
-    for (i = 0; i < layers.length; i++) {
-        selectedNameMap[layers[i].name] = true;
-    }
-
-    var plan = [];
-    for (i = 0; i < layers.length; i++) {
-        var currentNumber = (startNumber + i).toString();
-        var formattedNumber = zeroPad(currentNumber, numberFormat.length);
-        var targetName = truncateName(baseName + formattedNumber);
-        var finalName = targetName;
-        var action = "rename";
-        var note = "";
-
-        var hasConflict = isNameConflict(targetName, layers[i].name, existingNames);
-
-        if (hasConflict) {
-            if (conflictPolicy === CONFLICT_SKIP) {
-                action = "skip";
-                note = "目标名称已存在，按策略跳过";
-            } else if (conflictPolicy === CONFLICT_SUFFIX) {
-                finalName = generateUniqueName(targetName, existingNames);
-                note = "目标名称冲突，自动追加后缀";
-            } else {
-                note = "目标名称已存在，按策略覆盖";
-            }
-        }
-
-        if (action !== "skip") {
-            existingNames[finalName] = true;
-            if (selectedNameMap[layers[i].name]) {
-                delete existingNames[layers[i].name];
-            }
-        }
-
-        plan.push({
-            oldName: layers[i].name,
-            targetName: targetName,
-            finalName: finalName,
-            action: action,
-            note: note
-        });
-    }
-
-    return plan;
-}
-
-function isNameConflict(candidateName, currentName, existingNames) {
-    if (candidateName === currentName) {
-        return false;
-    }
-    return !!existingNames[candidateName];
-}
-
-function generateUniqueName(baseName, existingNames) {
-    var suffix = 1;
-    var candidate = baseName;
-
-    while (existingNames[candidate]) {
-        var appendix = "_" + suffix;
-        var headMaxLen = MAX_LAYER_NAME_LENGTH - appendix.length;
-        if (headMaxLen < 1) {
-            headMaxLen = 1;
-        }
-        candidate = truncateName(baseName.substring(0, headMaxLen) + appendix);
-        suffix++;
-    }
-
-    return candidate;
-}
-
-function truncateName(name) {
-    if (name.length > MAX_LAYER_NAME_LENGTH) {
-        return name.substring(0, MAX_LAYER_NAME_LENGTH);
-    }
-    return name;
-}
-
-function showPlanPreview(plan, dryRun) {
-    var renamed = 0;
-    var skipped = 0;
-    var lines = [];
-
-    for (var i = 0; i < plan.length; i++) {
-        if (plan[i].action === "skip") {
-            skipped++;
-            lines.push("[跳过] " + plan[i].oldName + " -> " + plan[i].targetName + "（" + plan[i].note + "）");
-        } else {
-            renamed++;
-            lines.push("[重命名] " + plan[i].oldName + " -> " + plan[i].finalName + (plan[i].note ? "（" + plan[i].note + "）" : ""));
-        }
-    }
-
-    var header = dryRun ? "Dry-run 预览（未写入）" : "执行完成";
-    var summary = header + "\n总计: " + plan.length + "，重命名: " + renamed + "，跳过: " + skipped + "\n\n";
-
-    if (lines.length > PREVIEW_MAX_LINES) {
-        lines = lines.slice(0, PREVIEW_MAX_LINES);
-        lines.push("... 其余条目已省略");
-    }
-
-    alert(summary + lines.join("\n"));
-}
-
-function collectAllArtLayerNames(layerCollection) {
-    var names = {};
-    collectNamesRecursively(layerCollection, names);
-    return names;
-}
-
-function collectNamesRecursively(layerCollection, names) {
-    for (var i = 0; i < layerCollection.length; i++) {
-        var layer = layerCollection[i];
-        if (layer.typename === "ArtLayer") {
-            names[layer.name] = true;
-        } else if (layer.typename === "LayerSet") {
-            collectNamesRecursively(layer.layers, names);
-        }
-    }
-}
-
-// 获取当前所选图层（包括图层组内图层）
-function getSelectedLayers() {
-    var selectedLayers = [];
     var ref = new ActionReference();
     ref.putEnumerated(charIDToTypeID("Dcmn"), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
     var desc = executeActionGet(ref);
@@ -273,13 +24,42 @@ function getSelectedLayers() {
             var layerIndex = targetLayers.getReference(i).getIndex();
             var layer = getLayerByIndex(layerIndex + 1);
             if (layer) {
-                selectedLayers = selectedLayers.concat(getAllLayers(layer));
+                var expanded = getAllLayers(layer);
+                for (var j = 0; j < expanded.length; j++) {
+                    if (expanded[j].id) {
+                        selectedIds[expanded[j].id] = true;
+                    }
+                }
             }
         }
     } else {
-        selectedLayers = getAllLayers(app.activeDocument.activeLayer);
+        var activeExpanded = getAllLayers(doc.activeLayer);
+        for (var k = 0; k < activeExpanded.length; k++) {
+            if (activeExpanded[k].id) {
+                selectedIds[activeExpanded[k].id] = true;
+            }
+        }
     }
-    return selectedLayers;
+
+    var allNames = {};
+    var selectedLayers = [];
+    collectNamesRecursivelyFromLayers(doc.layers, allNames, selectedLayers, selectedIds);
+
+    return { selectedLayers: selectedLayers, allNames: allNames };
+}
+
+function collectNamesRecursivelyFromLayers(layerCollection, allNames, selectedLayers, selectedIds) {
+    for (var i = 0; i < layerCollection.length; i++) {
+        var layer = layerCollection[i];
+        allNames[layer.name] = true;
+        if (layer.typename === "ArtLayer") {
+            if (layer.id && selectedIds[layer.id]) {
+                selectedLayers.push(layer);
+            }
+        } else if (layer.typename === "LayerSet") {
+            collectNamesRecursivelyFromLayers(layer.layers, allNames, selectedLayers, selectedIds);
+        }
+    }
 }
 
 function getAllLayers(layer) {
@@ -339,11 +119,139 @@ function setLayerColor(layer, color) {
     executeAction(charIDToTypeID("setd"), desc, DialogModes.NO);
 }
 
-function zeroPad(num, width) {
-    while (num.length < width) {
-        num = "0" + num;
+function executeRename(layers, plan, colorLabel) {
+    for (var i = 0; i < layers.length; i++) {
+        if (plan[i].action === "skip") {
+            Logger.info("执行", "[跳过] " + plan[i].oldName + " -> " + plan[i].targetName + "（" + plan[i].note + "）");
+            continue;
+        }
+        try {
+            layers[i].name = plan[i].finalName;
+            Logger.info("执行", "[重命名] " + plan[i].oldName + " -> " + plan[i].finalName);
+        } catch (e) {
+            Logger.error("执行", "[" + i + "] 重命名失败: " + plan[i].oldName + " -> " + plan[i].finalName + " (" + e.message + ")");
+            continue;
+        }
+        if (colorLabel !== "无颜色标签") {
+            try {
+                setLayerColor(layers[i], colorLabel);
+                Logger.info("执行", "[" + i + "] 颜色标签已设置: " + colorLabel);
+            } catch (e) {
+                Logger.warn("执行", "[" + i + "] 颜色标签设置失败: " + plan[i].finalName + " (" + e.message + ")");
+            }
+        }
     }
-    return num;
+}
+
+function main() {
+    Logger.clear();
+
+    var dlg = new Window("dialog", "LayerRenamer-dev1.4");
+
+    dlg.add("statictext", undefined, "基础图层名称：");
+    var baseNameInput = dlg.add("edittext", undefined, "Layer");
+    baseNameInput.characters = 20;
+
+    dlg.add("statictext", undefined, "编号起始值：");
+    var startNumberInput = dlg.add("edittext", undefined, "1");
+    startNumberInput.characters = 5;
+
+    dlg.add("statictext", undefined, "编号格式（例如 001）：");
+    var numberFormatInput = dlg.add("edittext", undefined, "001");
+    numberFormatInput.characters = 10;
+
+    dlg.add("statictext", undefined, "选择颜色标签：");
+    var colorOptions = ["无颜色标签", "红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "灰色"];
+    var colorDropdown = dlg.add("dropdownlist", undefined, colorOptions);
+    colorDropdown.selection = 0;
+
+    dlg.add("statictext", undefined, "命名冲突策略：");
+    var conflictOptions = [CONFLICT_SKIP, CONFLICT_OVERWRITE, CONFLICT_SUFFIX];
+    var conflictDropdown = dlg.add("dropdownlist", undefined, conflictOptions);
+    conflictDropdown.selection = 0;
+
+    var dryRunCheckbox = dlg.add("checkbox", undefined, "Dry-run 预览（仅查看，不写入）");
+    dryRunCheckbox.value = true;
+
+    var buttonGroup = dlg.add("group");
+    buttonGroup.orientation = "row";
+    var okButton = buttonGroup.add("button", undefined, "确认");
+    buttonGroup.add("button", undefined, "取消", { name: "cancel" });
+
+    okButton.onClick = function () {
+        var baseName, startNumber, numberFormat, colorLabel, conflictPolicy, dryRun;
+        try {
+            baseName = sanitizeBaseName(baseNameInput.text);
+            startNumber = parseInt(startNumberInput.text, 10);
+            numberFormat = numberFormatInput.text;
+            colorLabel = colorDropdown.selection ? colorDropdown.selection.text : "无颜色标签";
+            conflictPolicy = conflictDropdown.selection ? conflictDropdown.selection.text : CONFLICT_SKIP;
+            dryRun = dryRunCheckbox.value;
+
+            var validation = isValidInput(baseName, startNumber, numberFormat);
+            if (!validation.valid) {
+                alert(validation.error);
+                return;
+            }
+            Logger.info("输入校验", "通过: baseName=" + baseName + ", start=" + startNumber + ", format=" + numberFormat);
+        } catch (e) {
+            Logger.error("输入校验", "失败: " + e.message);
+            alert("输入校验失败：" + e.message);
+            return;
+        }
+
+        var layerData;
+        try {
+            layerData = collectLayerInfo(app.activeDocument);
+            if (!layerData.selectedLayers || layerData.selectedLayers.length === 0) {
+                alert("未检测到可重命名图层，请先选择图层。");
+                return;
+            }
+            Logger.info("图层收集", "选中 " + layerData.selectedLayers.length + " 个图层");
+        } catch (e) {
+            Logger.error("图层收集", "失败: " + e.message);
+            alert("图层收集失败：" + e.message);
+            return;
+        }
+
+        var plan;
+        try {
+            var layersForPlan = [];
+            for (var i = 0; i < layerData.selectedLayers.length; i++) {
+                layersForPlan.push({ name: layerData.selectedLayers[i].name });
+            }
+            plan = buildRenamePlan(layersForPlan, baseName, startNumber, numberFormat, conflictPolicy, layerData.allNames);
+            Logger.info("计划构建", "生成 " + plan.length + " 条重命名计划");
+        } catch (e) {
+            Logger.error("计划构建", "失败: " + e.message);
+            alert("计划构建失败：" + e.message);
+            return;
+        }
+
+        if (dryRun) {
+            Logger.info("执行模式", "Dry-run 预览");
+            alert(formatPlanPreview(plan, true));
+            return;
+        }
+
+        dlg.close();
+        try {
+            executeRename(layerData.selectedLayers, plan, colorLabel);
+            Logger.info("执行完成", "批量重命名结束");
+        } catch (e) {
+            Logger.error("执行", "致命错误: " + e.message);
+            alert("执行过程中发生致命错误：" + e.message);
+        }
+        alert(formatPlanPreview(plan, false));
+    };
+
+    dlg.addEventListener("keydown", function (event) {
+        if (event.keyName === "Enter") {
+            okButton.notify();
+        }
+    });
+
+    dlg.show();
 }
 
 main();
