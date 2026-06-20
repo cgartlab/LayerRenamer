@@ -1,5 +1,40 @@
-# Debug scripts with API tokens.omo/
+# Debug scripts with API tokens
+.omo/
 
-# OS files.DS_Store
+# OpenCode tools
+.opencode/
+.sisyphus/
+
+# OS files
+.DS_Store
 Thumbs.db
+NUL
 
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build/package
+node_modules/
+dist/
+
+# Environment
+.env
+.env.local
+
+# Test artifacts
+test-results/
+capture-screenshots.js
+cookies.txt
+
+# Syncthing
+.stignore
+
+# Lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.opencode
